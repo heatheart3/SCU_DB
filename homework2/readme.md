@@ -4,7 +4,7 @@
 ![p1](./result_images/1.png)
 
 ## EXTENDIBLE_HASH
-![p1](./screenshots/3.png)
+![p1](./result_images/3.png)
 
 ## BUFFER_POOL_MANAGER
-![p1](./screenshots/2.png)
+![p1](./result_images/2.png)
