@@ -1,28 +1,21 @@
 #include "buffer/buffer_pool_manager.h"
 
 namespace scudb {
-
-/*
- * BufferPoolManager Constructor
- * When log_manager is nullptr, logging is disabled (for test purpose)
- * WARNING: Do Not Edit This Function
- */
-
 BufferPoolManager::BufferPoolManager(size_t pool_size,
-                                                 DiskManager *disk_manager,
-                                                 LogManager *log_manager)
-    : pool_size_(pool_size), disk_manager_(disk_manager),
-      log_manager_(log_manager) {
-  // a consecutive memory space for buffer pool
-  pages_ = new Page[pool_size_];
-  page_table_ = new ExtendibleHash<page_id_t, Page *>(BUCKET_SIZE);
-  replacer_ = new LRUReplacer<Page *>;
-  free_list_ = new std::list<Page *>;
+                                     DiskManager *disk_manager,
+                                     LogManager *log_manager)
+        : pool_size_(pool_size), disk_manager_(disk_manager),
+          log_manager_(log_manager) {
+    // a consecutive memory space for buffer pool
+    pages_ = new Page[pool_size_];
+    page_table_ = new ExtendibleHash<page_id_t, Page *>(BUCKET_SIZE);
+    replacer_ = new LRUReplacer<Page *>;
+    free_list_ = new std::list<Page *>;
 
-  // put all the pages into free list
-  for (size_t i = 0; i < pool_size_; ++i) {
-    free_list_->push_back(&pages_[i]);
-  }
+    // put all the pages into free list
+    for (size_t i = 0; i < pool_size_; ++i) {
+        free_list_->push_back(&pages_[i]);
+    }
 }
 
 /*
@@ -30,10 +23,10 @@ BufferPoolManager::BufferPoolManager(size_t pool_size,
  * WARNING: Do Not Edit This Function
  */
 BufferPoolManager::~BufferPoolManager() {
-  delete[] pages_;
-  delete page_table_;
-  delete replacer_;
-  delete free_list_;
+    delete[] pages_;
+    delete page_table_;
+    delete replacer_;
+    delete free_list_;
 }
 
 /**
@@ -47,32 +40,43 @@ BufferPoolManager::~BufferPoolManager() {
  * 4. Update page metadata, read page content from disk file and return page
  * pointer
  */
- //数据库需要访问某个page，需要将page从disk加载到内存中
 Page *BufferPoolManager::FetchPage(page_id_t page_id) {
-        lock_guard<mutex> lck(latch_);
-        Page *tar = nullptr;
-        if (page_table_->Find(page_id,tar)) { //1.1
-            tar->pin_count_++;
-            replacer_->Erase(tar);
-            return tar;
+    std::lock_guard<std::mutex> lck(latch_);
+    // 1.
+    Page *target = nullptr;
+    // 1.1
+    if(page_table_->Find(page_id,target)){
+        target->pin_count_++;
+        return target;
+    }
+    // 1.2
+    if (!free_list_->empty())
+    {
+        target = free_list_->front();
+        free_list_->pop_front();
+    }
+    else{
+        if(replacer_->Size() == 0){
+            return nullptr;
         }
-        //
-        tar = GetVictimPage();
-        if (tar == nullptr) return tar;
-        //2
-        if (tar->is_dirty_) {
-            disk_manager_->WritePage(tar->GetPageId(),tar->data_);
-        }
-        //3
-        page_table_->Remove(tar->GetPageId());
-        page_table_->Insert(page_id,tar);
-        //4
-        disk_manager_->ReadPage(page_id,tar->data_);
-        tar->pin_count_ = 1;
-        tar->is_dirty_ = false;
-        tar->page_id_= page_id;
+        replacer_->Victim(target);
+    }
+    if(target == nullptr)
+        return nullptr;
+    // 2.
+    if(target->is_dirty_){
+        disk_manager_->WritePage(target->GetPageId(), target->data_);
+    }
+    // 3.
+    page_table_->Remove(target->GetPageId());
+    page_table_->Insert(page_id, target);
+    // 4.
+    disk_manager_->ReadPage(page_id, target->data_);
+    target->pin_count_ = 1;
+    target->is_dirty_ = false;
+    target->page_id_ = page_id;
 
-        return tar;
+    return target;
 }
 
 /*
@@ -81,23 +85,19 @@ Page *BufferPoolManager::FetchPage(page_id_t page_id) {
  * replacer if pin_count<=0 before this call, return false. is_dirty: set the
  * dirty flag of this page
  */
-//页面用完之后要进行unpin操作
 bool BufferPoolManager::UnpinPage(page_id_t page_id, bool is_dirty) {
-        lock_guard<mutex> lck(latch_);
-        Page *tar = nullptr;
-        page_table_->Find(page_id,tar);
-        if (tar == nullptr) {
-            return false;
-        }
-        tar->is_dirty_ = is_dirty;
-        if (tar->GetPinCount() <= 0) {
-            return false;
-        }
-        ;
-        if (--tar->pin_count_ == 0) {
-            replacer_->Insert(tar);
-        }
-        return true;
+    std::lock_guard<std::mutex> lck(latch_);
+    Page *target = nullptr;
+    page_table_->Find(page_id, target);
+    if (target == nullptr)
+        return false;
+    target->is_dirty_ = true;
+    if (target->GetPinCount() <= 0)
+        return false;
+    target->pin_count_--;
+    if (target->pin_count_ == 0)
+        replacer_->Insert(target);
+    return true;
 }
 
 /*
@@ -106,20 +106,7 @@ bool BufferPoolManager::UnpinPage(page_id_t page_id, bool is_dirty) {
  * if page is not found in page table, return false
  * NOTE: make sure page_id != INVALID_PAGE_ID
  */
-//把指定的page写回硬盘
-bool BufferPoolManager::FlushPage(page_id_t page_id) {
-    lock_guard<mutex> lck(latch_);
-    Page *tar = nullptr;
-    page_table_->Find(page_id,tar);
-    if (tar == nullptr || tar->page_id_ == INVALID_PAGE_ID) {
-        return false;
-    }
-    if (tar->is_dirty_) {
-        disk_manager_->WritePage(page_id,tar->GetData());
-        tar->is_dirty_ = false;
-    }
-
-    return true;}
+bool BufferPoolManager::FlushPage(page_id_t page_id) { return false; }
 
 /**
  * User should call this method for deleting a page. This routine will call
@@ -129,24 +116,7 @@ bool BufferPoolManager::FlushPage(page_id_t page_id) {
  * call disk manager's DeallocatePage() method to delete from disk file. If
  * the page is found within page table, but pin_count != 0, return false
  */
- //将某一页从buffer pool 移除
-bool BufferPoolManager::DeletePage(page_id_t page_id) {
-    lock_guard<mutex> lck(latch_);
-    Page *tar = nullptr;
-    page_table_->Find(page_id,tar);
-    if (tar != nullptr) {
-        if (tar->GetPinCount() > 0) {
-            return false;
-        }
-        replacer_->Erase(tar);
-        page_table_->Remove(page_id);
-        tar->is_dirty_= false;
-        tar->ResetMemory();
-        free_list_->push_back(tar);
-    }
-    disk_manager_->DeallocatePage(page_id);
-    return true;
- }
+bool BufferPoolManager::DeletePage(page_id_t page_id) { return false; }
 
 /**
  * User should call this method if needs to create a new page. This routine
@@ -156,43 +126,41 @@ bool BufferPoolManager::DeletePage(page_id_t page_id) {
  * update new page's metadata, zero out memory and add corresponding entry
  * into page table. return nullptr if all the pages in pool are pinned
  */
- //在buffer 中腾出一块新的地方装page
 Page *BufferPoolManager::NewPage(page_id_t &page_id) {
-    lock_guard<mutex> lck(latch_);
-    Page *tar = nullptr;
-    tar = GetVictimPage();
-    if (tar == nullptr) return tar;
-
-    page_id = disk_manager_->AllocatePage();
-    if (tar->is_dirty_) {
-        disk_manager_->WritePage(tar->GetPageId(),tar->data_);
+    std::lock_guard<std::mutex> lck(latch_);
+    Page *target = nullptr;
+    // choose a victim page
+    if (!free_list_->empty())
+    {
+        target = free_list_->front();
+        free_list_->pop_front();
     }
-
-    page_table_->Remove(tar->GetPageId());
-    page_table_->Insert(page_id,tar);
-
-    tar->page_id_ = page_id;
-    tar->ResetMemory();
-    tar->is_dirty_ = false;
-    tar->pin_count_ = 1;
-
-    return tar;
-}
-//根据LRU算法取出要替换的页
-Page *BufferPoolManager::GetVictimPage() {
-    Page *tar = nullptr;
-    if (free_list_->empty()) {
-        if (replacer_->Size() == 0) {
+    else
+    {
+        if (replacer_->Size() == 0)
+        {
             return nullptr;
         }
-        replacer_->Victim(tar);
-    } else {
-        tar = free_list_->front();
-        free_list_->pop_front();
-        assert(tar->GetPageId() == INVALID_PAGE_ID);
+        replacer_->Victim(target);
     }
-    assert(tar->GetPinCount() == 0);
-    return tar;
-}
+    assert(target->pin_count_ == 0);
+    if (target == nullptr)
+        return nullptr;
+    page_id = disk_manager_->AllocatePage();
+    // if is dirty write back first
+    if (target->is_dirty_)
+    {
+        disk_manager_->WritePage(target->GetPageId(), target->data_);
+    }
+    // replace the victim page
+    page_table_->Remove(target->GetPageId());
+    page_table_->Insert(page_id,target);
+    // set up the page
+    target->page_id_ = page_id;
+    target->ResetMemory();
+    target->is_dirty_ = false;
+    target->pin_count_ = 1;
 
+    return target;
+}
 } // namespace scudb
